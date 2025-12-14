@@ -6479,19 +6479,10 @@ border-top: none;
         const dexieDB = new Dexie('GeminiChatDB');
 
         // 2. 表结构：【关键修复】加回了 'storage' 表，这是 script.js 存变量的地方
-        dexieDB.version(1).stores({
+        dexieDB.version(3).stores({
             chats: '&id, timestamp', // 聊天记录
-            worldBooks: '&id',       // 世界书
-            myStickers: '&id',       // 表情包
             globalSettings: 'key',   // 新版设置仓库
             storage: 'key, value',   // 【重点】旧版设置仓库 (script.js 找这个！)
-            apiPresets: '&id',       // API预设
-            npcs: '&id',             // NPC
-            npcGroups: '&id',        // NPC分组
-            qzonePosts: '&id',       // 朋友圈
-            favorites: '&id',        // 收藏
-            emails: '&id',           // 邮件
-            grStories: '&id'         // 故事
         });
 
         // --- 核心同步逻辑 ---
@@ -16469,6 +16460,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

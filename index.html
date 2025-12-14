@@ -6474,66 +6474,62 @@ border-top: none;
             groupRecipientSelectionTitle = document.getElementById('group-recipient-selection-title');
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
 
-        // --- Dexie DB Setup ---
-        const dexieDB = new Dexie('章鱼喷墨机DB_ee');
+// --- Dexie DB Setup (已修改为同步模式) ---
+        const dexieDB = new Dexie('GeminiChatDB');
         dexieDB.version(1).stores({
-            storage: 'key, value'
-        });
-        dexieDB.version(2).stores({
-            characters: '&id',
-            groups: '&id',
-            worldBooks: '&id',
-            myStickers: '&id',
-            globalSettings: 'key'
-        }).upgrade(async tx => {
-            console.log("Upgrading database to version 2...");
-            const oldData = await tx.table('storage').get('章鱼喷墨机');
-            if (oldData && oldData.value) {
-                console.log("Old data found, starting migration.");
-                const data = JSON.parse(oldData.value);
-                if (data.characters) await tx.table('characters').bulkPut(data.characters);
-                if (data.groups) await tx.table('groups').bulkPut(data.groups);
-                if (data.worldBooks) await tx.table('worldBooks').bulkPut(data.worldBooks);
-                if (data.myStickers) await tx.table('myStickers').bulkPut(data.myStickers);
-                
-                const settingsToMigrate = {
-                    apiSettings: data.apiSettings || {},
-                    wallpaper: data.wallpaper || 'https://i.postimg.cc/W4Z9R9x4/ins-1.jpg',
-                    homeScreenMode: data.homeScreenMode || 'night',
-                    fontUrl: data.fontUrl || '',
-                    customIcons: data.customIcons || {},
-                    apiPresets: data.apiPresets || [],
-                    bubbleCssPresets: data.bubbleCssPresets || [],
-                    myPersonaPresets: data.myPersonaPresets || [],
-                    globalCss: data.globalCss || '',
-                    globalCssPresets: data.globalCssPresets || [],
-                    homeSignature: data.homeSignature || '编辑个性签名...',
-                    forumPosts: data.forumPosts || [],
-                    forumBindings: data.forumBindings || { worldBookIds: [], charIds: [], userPersonaIds: [] },
-                    pomodoroTasks: data.pomodoroTasks || [],
-                    pomodoroSettings: data.pomodoroSettings || { boundCharId: null, userPersona: '', focusBackground: '', taskCardBackground: '', encouragementMinutes: 25, pokeLimit: 5, globalWorldBookIds: [] },
-                    insWidgetSettings: data.insWidgetSettings || { avatar1: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', bubble1: 'love u.', avatar2: 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg', bubble2: 'miss u.' },
-                    homeWidgetSettings: data.homeWidgetSettings || defaultWidgetSettings
-                };
-
-                const settingsPromises = Object.entries(settingsToMigrate).map(([key, value]) =>
-                    tx.table('globalSettings').put({ key, value })
-                );
-                await Promise.all(settingsPromises);
-                
-                await tx.table('storage').delete('章鱼喷墨机');
-                console.log("Migration complete. Old data removed.");
-            } else {
-                console.log("No old data found to migrate.");
-            }
+            chats: '&id, timestamp', // 核心聊天表，存储所有角色和群组
+            worldBooks: '&id',       // 世界书表
+            myStickers: '&id',       // 表情包表
+            globalSettings: 'key',   // 全局设置表
+            apiPresets: '&id',       // API预设表
+            npcs: '&id',             // NPC表
+            npcGroups: '&id'         // NPC分组表
         });
 
         const saveData = async () => {
+            // 1. 将 characters (私聊) 转换为 chats 表的格式
+            const charChats = db.characters.map(c => ({
+                ...c,
+                id: c.id,
+                name: c.realName || c.name, 
+                isGroup: false,
+                timestamp: c.lastUserMessageTimestamp || Date.now(),
+                description: c.persona,
+                settings: {
+                    ...(c.settings || {}),
+                    myNickname: c.myName,
+                    userPersona: c.myPersona,
+                    myAvatar: c.myAvatar,
+                    aiAvatar: c.avatar,
+                    bilingualModeEnabled: c.bilingualModeEnabled,
+                    useCustomBubbleCss: c.useCustomBubbleCss,
+                    customBubbleCss: c.customBubbleCss
+                }
+            }));
+
+            // 2. 将 groups (群聊) 转换为 chats 表的格式
+            const groupChats = db.groups.map(g => ({
+                ...g,
+                id: g.id,
+                name: g.name,
+                isGroup: true,
+                timestamp: Date.now(),
+                settings: {
+                    ...(g.settings || {}),
+                    myNickname: g.me.nickname,
+                    userPersona: g.me.persona,
+                    myAvatar: g.me.avatar,
+                    useCustomBubbleCss: g.useCustomBubbleCss,
+                    customBubbleCss: g.customBubbleCss
+                }
+            }));
+
             await dexieDB.transaction('rw', dexieDB.tables, async () => {
-                await dexieDB.characters.bulkPut(db.characters);
-                await dexieDB.groups.bulkPut(db.groups);
-                await dexieDB.worldBooks.bulkPut(db.worldBooks);
-                await dexieDB.myStickers.bulkPut(db.myStickers);
+                // 批量保存到 chats 表
+                await dexieDB.chats.bulkPut([...charChats, ...groupChats]);
+                // 保存其他通用数据
+                if(db.worldBooks.length) await dexieDB.worldBooks.bulkPut(db.worldBooks);
+                if(db.myStickers.length) await dexieDB.myStickers.bulkPut(db.myStickers);
 
                 const settingsPromises = globalSettingKeys.map(key => {
                     if (db[key] !== undefined) {
@@ -6546,78 +6542,118 @@ border-top: none;
         };
 
         const loadData = async () => {
-            const [characters, groups, worldBooks, myStickers, settingsArray] = await Promise.all([
-                dexieDB.characters.toArray(),
-                dexieDB.groups.toArray(),
-                dexieDB.worldBooks.toArray(),
-                dexieDB.myStickers.toArray(),
-                dexieDB.globalSettings.toArray()
-            ]);
+            try {
+                // 从数据库加载数据
+                const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
+                    dexieDB.chats.toArray(),      // 读取所有聊天
+                    dexieDB.worldBooks.toArray(), // 读取世界书
+                    dexieDB.myStickers.toArray(), // 读取表情包
+                    dexieDB.globalSettings.toArray(), // 读取全局设置
+                    dexieDB.apiPresets.toArray()  // 读取API预设
+                ]);
 
-            db.characters = characters;
-            db.groups = groups;
-            db.worldBooks = worldBooks;
-            db.myStickers = myStickers;
+                // 加载基础数据
+                db.worldBooks = worldBooks || [];
+                db.myStickers = myStickers || [];
+                db.apiPresets = apiPresets || [];
 
-            const settings = settingsArray.reduce((acc, { key, value }) => {
-                acc[key] = value;
-                return acc;
-            }, {});
-
-            globalSettingKeys.forEach(key => {
-                const defaultValue = {
-                    apiSettings: {},
-                    wallpaper: 'https://i.postimg.cc/W4Z9R9x4/ins-1.jpg',
-                    homeScreenMode: 'night',
-                    fontUrl: '',
-                    customIcons: {},
-                    apiPresets: [],
-                    bubbleCssPresets: [],
-                    myPersonaPresets: [],
-                    globalCss: '',
-                    globalCssPresets: [],
-                    homeSignature: '编辑个性签名...',
-                    forumBindings: { worldBookIds: [], charIds: [], userPersonaIds: [] },
-                    pomodoroTasks: [],
-                    pomodoroSettings: { boundCharId: null, userPersona: '', focusBackground: '', taskCardBackground: '', encouragementMinutes: 25, pokeLimit: 5, globalWorldBookIds: [] },
-                    insWidgetSettings: { avatar1: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', bubble1: 'love u.', avatar2: 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg', bubble2: 'miss u.' },
-                    homeWidgetSettings: defaultWidgetSettings
-                };
-                db[key] = settings[key] !== undefined ? settings[key] : (defaultValue[key] !== undefined ? JSON.parse(JSON.stringify(defaultValue[key])) : undefined);
-            });
-
-            // Data integrity checks (can be kept)
-            db.characters.forEach(c => {
-                if (c.isPinned === undefined) c.isPinned = false;
-                if (c.status === undefined) c.status = '在线';
-                if (!c.worldBookIds) c.worldBookIds = [];
-                if (c.customBubbleCss === undefined) c.customBubbleCss = '';
-                if (c.useCustomBubbleCss === undefined) c.useCustomBubbleCss = false;
-            });
-            db.groups.forEach(g => {
-                if (g.isPinned === undefined) g.isPinned = false;
-                if (!g.worldBookIds) g.worldBookIds = [];
-                if (g.customBubbleCss === undefined) g.customBubbleCss = '';
-                if (g.useCustomBubbleCss === undefined) g.useCustomBubbleCss = false;
-            });
-            
-            // Handle old localStorage data if it exists
-            const oldLocalStorageData = localStorage.getItem('gemini-chat-app-db');
-            if(oldLocalStorageData) {
-                console.log("Found old localStorage data, migrating...");
-                // This is a simplified migration, assuming the structure is the same as the old IndexedDB data
-                const data = JSON.parse(oldLocalStorageData);
-                await dexieDB.transaction('rw', dexieDB.tables, async () => {
-                    if (data.characters) await dexieDB.characters.bulkPut(data.characters);
-                    if (data.groups) await dexieDB.groups.bulkPut(data.groups);
-                    // ... add other tables as needed
+                // --- 核心同步逻辑：将 chats 拆分回 characters 和 groups ---
+                
+                // 1. 筛选出角色 (isGroup 为 false 或 undefined)
+                db.characters = chats.filter(c => !c.isGroup).map(c => {
+                    // 从 settings 中恢复用户信息，如果不存在则使用默认值
+                    const settings = c.settings || {};
+                    return {
+                        ...c,
+                        id: c.id,
+                        realName: c.name,   // 同步角色名
+                        remarkName: c.name, // 同步备注名
+                        persona: c.description || c.persona || '', // 同步人设
+                        avatar: c.avatar || settings.aiAvatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', // 同步头像
+                        
+                        // 同步用户侧信息 (关键变量映射)
+                        myName: settings.myNickname || '我', 
+                        myPersona: settings.userPersona || '',
+                        myAvatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg',
+                        
+                        // 其他状态
+                        history: c.history || [],
+                        worldBookIds: c.worldBookIds || [],
+                        bilingualModeEnabled: settings.bilingualModeEnabled || false,
+                        useCustomBubbleCss: settings.useCustomBubbleCss || false,
+                        customBubbleCss: settings.customBubbleCss || '',
+                        // 确保设置对象存在，以便下次保存
+                        settings: settings 
+                    };
                 });
-                localStorage.removeItem('gemini-chat-app-db');
-                // Reload data after migration
-                await loadData();
+
+                // 2. 筛选出群聊 (isGroup 为 true)
+                db.groups = chats.filter(c => c.isGroup).map(g => {
+                    const settings = g.settings || {};
+                    return {
+                        ...g,
+                        id: g.id,
+                        name: g.name,
+                        avatar: g.avatar,
+                        // 恢复群聊中的“我”的信息
+                        me: { 
+                             nickname: settings.myNickname || '我',
+                             persona: settings.userPersona || '',
+                             avatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg'
+                        },
+                        members: g.members || [],
+                        history: g.history || [],
+                        worldBookIds: g.worldBookIds || [],
+                        useCustomBubbleCss: settings.useCustomBubbleCss || false,
+                        customBubbleCss: settings.customBubbleCss || '',
+                        settings: settings
+                    };
+                });
+
+                // 加载全局设置
+                const settingsMap = settingsArray.reduce((acc, { key, value }) => {
+                    acc[key] = value;
+                    return acc;
+                }, {});
+
+                globalSettingKeys.forEach(key => {
+                    const defaultValue = {
+                        apiSettings: {},
+                        wallpaper: 'https://i.postimg.cc/W4Z9R9x4/ins-1.jpg',
+                        homeScreenMode: 'night',
+                        fontUrl: '',
+                        customIcons: {},
+                        apiPresets: [], 
+                        bubbleCssPresets: [],
+                        myPersonaPresets: [],
+                        globalCss: '',
+                        globalCssPresets: [],
+                        homeSignature: '编辑个性签名...',
+                        forumPosts: [],
+                        forumBindings: { worldBookIds: [], charIds: [], userPersonaIds: [] },
+                        pomodoroTasks: [],
+                        pomodoroSettings: { boundCharId: null, userPersona: '', focusBackground: '', taskCardBackground: '', encouragementMinutes: 25, pokeLimit: 5, globalWorldBookIds: [] },
+                        insWidgetSettings: { avatar1: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', bubble1: 'love u.', avatar2: 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg', bubble2: 'miss u.' },
+                        homeWidgetSettings: defaultWidgetSettings
+                    };
+                    
+                    // 特殊处理：如果是 API 设置，检查是否存在 apiConfig (script.js 可能用的名字)
+                    if (key === 'apiSettings' && !settingsMap[key] && settingsMap['apiConfig']) {
+                        db[key] = settingsMap['apiConfig'];
+                    } else {
+                        db[key] = settingsMap[key] !== undefined ? settingsMap[key] : (defaultValue[key] !== undefined ? JSON.parse(JSON.stringify(defaultValue[key])) : undefined);
+                    }
+                });
+
+                // 再次确保 apiPresets 从独立表中加载了
+                if (apiPresets && apiPresets.length > 0) {
+                    db.apiPresets = apiPresets;
+                }
+            } catch (e) {
+                console.error("加载数据失败:", e);
+                alert("加载数据出错，请检查控制台");
             }
         };
-
         let notificationQueue = [];
         let isToastVisible = false;
 
@@ -16384,3 +16420,4 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+

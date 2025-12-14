@@ -6475,17 +6475,24 @@ border-top: none;
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
 
         // --- Dexie DB Setup ---
-        const dexieDB = new Dexie('章鱼喷墨机DB_ee');
+        const dexieDB = new Dexie('GeminiChatDB');
         dexieDB.version(1).stores({
-            storage: 'key, value'
+             storage: 'key, value',
+             chats: '&id', // 另一个小手机把角色和群组都放在这里
+             worldBooks: '&id',
+             myStickers: '&id',
+             globalSettings: 'key',
+             apiPresets: '&id' // 另一个小手机也有这个表
         });
+        // 保留 version 2 以防万一，但映射到新的表结构
         dexieDB.version(2).stores({
-            characters: '&id',
-            groups: '&id',
+            chats: '&id',
             worldBooks: '&id',
             myStickers: '&id',
-            globalSettings: 'key'
-        }).upgrade(async tx => {
+            globalSettings: 'key',
+            apiPresets: '&id'
+        });
+        .upgrade(async tx => {
             console.log("Upgrading database to version 2...");
             const oldData = await tx.table('storage').get('章鱼喷墨机');
             if (oldData && oldData.value) {
@@ -6528,12 +6535,20 @@ border-top: none;
             }
         });
 
-        const saveData = async () => {
+const saveData = async () => {
             await dexieDB.transaction('rw', dexieDB.tables, async () => {
-                await dexieDB.characters.bulkPut(db.characters);
-                await dexieDB.groups.bulkPut(db.groups);
+                // 1. 将角色和群组合并保存到 chats 表
+                const allChats = [...db.characters, ...db.groups];
+                await dexieDB.chats.bulkPut(allChats);
+                
+                // 2. 保存 API 预设 (如果有)
+                if (db.apiPresets && db.apiPresets.length > 0) {
+                     await dexieDB.apiPresets.bulkPut(db.apiPresets);
+                }
+
                 await dexieDB.worldBooks.bulkPut(db.worldBooks);
                 await dexieDB.myStickers.bulkPut(db.myStickers);
+
 
                 const settingsPromises = globalSettingKeys.map(key => {
                     if (db[key] !== undefined) {
@@ -6546,18 +6561,24 @@ border-top: none;
         };
 
         const loadData = async () => {
-            const [characters, groups, worldBooks, myStickers, settingsArray] = await Promise.all([
-                dexieDB.characters.toArray(),
-                dexieDB.groups.toArray(),
+const loadData = async () => {
+            // 1. 从 chats 表和 apiPresets 表读取数据
+            const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
+                dexieDB.chats.toArray(), // 读取所有聊天
                 dexieDB.worldBooks.toArray(),
                 dexieDB.myStickers.toArray(),
-                dexieDB.globalSettings.toArray()
+                dexieDB.globalSettings.toArray(),
+                dexieDB.apiPresets ? dexieDB.apiPresets.toArray() : [] // 尝试读取API预设
             ]);
 
-            db.characters = characters;
-            db.groups = groups;
+            // 2. 将 chats 拆分为角色和群组
+            // 如果有 isGroup 属性则为群组，否则为角色
+            db.characters = chats.filter(c => !c.isGroup);
+            db.groups = chats.filter(c => c.isGroup);
+            
             db.worldBooks = worldBooks;
             db.myStickers = myStickers;
+            db.apiPresets = apiPresets || [];
 
             const settings = settingsArray.reduce((acc, { key, value }) => {
                 acc[key] = value;
@@ -6588,6 +6609,17 @@ border-top: none;
 
             // Data integrity checks (can be kept)
             db.characters.forEach(c => {
+                // --- 新增：变量兼容性处理 ---
+                // 如果没有 realName (真名)，就用 name (名字) 代替
+                if (!c.realName && c.name) c.realName = c.name;
+                // 如果没有 remarkName (备注)，也用 name 代替
+                if (!c.remarkName && c.name) c.remarkName = c.name;
+                // 确保 settings 对象存在 (另一个小手机可能把头像存在 settings 里)
+                if (!c.settings) c.settings = {};
+                // --- 兼容性处理结束 ---
+
+                if (c.isPinned === undefined) c.isPinned = false;
+                // ... (原有的其他检查代码保持不变)
                 if (c.isPinned === undefined) c.isPinned = false;
                 if (c.status === undefined) c.status = '在线';
                 if (!c.worldBookIds) c.worldBookIds = [];
@@ -16384,5 +16416,6 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 

@@ -6475,28 +6475,17 @@ border-top: none;
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
 
         // --- Dexie DB Setup ---
-        // 1. 修改数据库名为 GeminiChatDB
-        const dexieDB = new Dexie('GeminiChatDB');
-        
-        // 2. 核心修改：使用与另一个手机一致的表结构
-        // 注意：这里必须把 chats 放在第一位
+        const dexieDB = new Dexie('章鱼喷墨机DB_ee');
         dexieDB.version(1).stores({
-            chats: '&id', 
-            worldBooks: '&id',
-            myStickers: '&id',
-            globalSettings: 'key',
-            apiPresets: '&id',
-            storage: 'key, value' // 保留这个以防万一
+            storage: 'key, value'
         });
-        // 保留 version 2 以防万一，但映射到新的表结构
         dexieDB.version(2).stores({
-            chats: '&id',
+            characters: '&id',
+            groups: '&id',
             worldBooks: '&id',
             myStickers: '&id',
-            globalSettings: 'key',
-            apiPresets: '&id'
-        });
-        .upgrade(async tx => {
+            globalSettings: 'key'
+        }).upgrade(async tx => {
             console.log("Upgrading database to version 2...");
             const oldData = await tx.table('storage').get('章鱼喷墨机');
             if (oldData && oldData.value) {
@@ -6539,22 +6528,13 @@ border-top: none;
             }
         });
 
-            const saveData = async () => {
+        const saveData = async () => {
             await dexieDB.transaction('rw', dexieDB.tables, async () => {
-                // 1. 合并角色和群组，统一保存到 chats 表
-                const allChats = [...db.characters, ...db.groups];
-                await dexieDB.chats.bulkPut(allChats);
-                
-                // 2. 保存 API 预设
-                if (db.apiPresets && db.apiPresets.length > 0) {
-                     await dexieDB.apiPresets.bulkPut(db.apiPresets);
-                }
-
-                // 3. 保存其他数据
+                await dexieDB.characters.bulkPut(db.characters);
+                await dexieDB.groups.bulkPut(db.groups);
                 await dexieDB.worldBooks.bulkPut(db.worldBooks);
                 await dexieDB.myStickers.bulkPut(db.myStickers);
 
-                // 4. 保存全局设置 (这段不能漏！)
                 const settingsPromises = globalSettingKeys.map(key => {
                     if (db[key] !== undefined) {
                         return dexieDB.globalSettings.put({ key: key, value: db[key] });
@@ -6565,44 +6545,25 @@ border-top: none;
             });
         };
 
-
-                const settingsPromises = globalSettingKeys.map(key => {
-                    if (db[key] !== undefined) {
-                        return dexieDB.globalSettings.put({ key: key, value: db[key] });
-                    }
-                    return null;
-                }).filter(p => p);
-                await Promise.all(settingsPromises);
-            });
-        };
-
-       const loadData = async () => {
-            // 1. 从数据库读取所有表的数据
-            const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
-                dexieDB.chats.toArray(),
+        const loadData = async () => {
+            const [characters, groups, worldBooks, myStickers, settingsArray] = await Promise.all([
+                dexieDB.characters.toArray(),
+                dexieDB.groups.toArray(),
                 dexieDB.worldBooks.toArray(),
                 dexieDB.myStickers.toArray(),
-                dexieDB.globalSettings.toArray(),
-                dexieDB.apiPresets ? dexieDB.apiPresets.toArray() : []
+                dexieDB.globalSettings.toArray()
             ]);
 
-            // 2. 区分角色和群组
-            // 如果数据里有 isGroup 属性或者是群组类型，就分到 groups，否则分到 characters
-            db.characters = chats.filter(c => !c.isGroup && c.type !== 'group');
-            db.groups = chats.filter(c => c.isGroup || c.type === 'group');
-            
-            db.worldBooks = worldBooks || [];
-            db.myStickers = myStickers || [];
-            db.apiPresets = apiPresets || [];
+            db.characters = characters;
+            db.groups = groups;
+            db.worldBooks = worldBooks;
+            db.myStickers = myStickers;
 
-            // 3. 转换设置数组为对象
             const settings = settingsArray.reduce((acc, { key, value }) => {
                 acc[key] = value;
                 return acc;
             }, {});
 
-            // 4. 【重要】初始化所有设置，如果数据库里没有，就使用默认值
-            // 如果这一步缺失，会导致页面白屏
             globalSettingKeys.forEach(key => {
                 const defaultValue = {
                     apiSettings: {},
@@ -6622,16 +6583,11 @@ border-top: none;
                     insWidgetSettings: { avatar1: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', bubble1: 'love u.', avatar2: 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg', bubble2: 'miss u.' },
                     homeWidgetSettings: defaultWidgetSettings
                 };
-                // 如果数据库有值就用数据库的，否则用默认值
                 db[key] = settings[key] !== undefined ? settings[key] : (defaultValue[key] !== undefined ? JSON.parse(JSON.stringify(defaultValue[key])) : undefined);
             });
 
-            // 5. 数据兼容性检查
+            // Data integrity checks (can be kept)
             db.characters.forEach(c => {
-                // 兼容：如果只有 name 没有 realName，就补上
-                if (!c.realName && c.name) c.realName = c.name;
-                if (!c.remarkName && c.name) c.remarkName = c.name;
-                
                 if (c.isPinned === undefined) c.isPinned = false;
                 if (c.status === undefined) c.status = '在线';
                 if (!c.worldBookIds) c.worldBookIds = [];
@@ -6644,7 +6600,6 @@ border-top: none;
                 if (g.customBubbleCss === undefined) g.customBubbleCss = '';
                 if (g.useCustomBubbleCss === undefined) g.useCustomBubbleCss = false;
             });
-        };
             
             // Handle old localStorage data if it exists
             const oldLocalStorageData = localStorage.getItem('gemini-chat-app-db');
@@ -16429,7 +16384,3 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
-
-
-
-

@@ -6473,109 +6473,113 @@ border-top: none;
             confirmGroupRecipientBtn = document.getElementById('confirm-group-recipient-btn'),
             groupRecipientSelectionTitle = document.getElementById('group-recipient-selection-title');
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
-
-// --- Dexie DB Setup (终极兼容版) ---
-        // 1. 数据库名称改为 script.js 使用的 'GeminiChatDB'
+// --- Dexie DB Setup (完美同步版) ---
+        // 1. 数据库名称：script.js 用的是 'GeminiChatDB'
         const dexieDB = new Dexie('GeminiChatDB');
-        
-        // 2. 声明表结构：包含 script.js 可能用到的所有表，防止报错
+
+        // 2. 表结构：必须包含 script.js 用的所有表，否则报错
         dexieDB.version(1).stores({
-            chats: '&id, timestamp', // 核心聊天表
+            chats: '&id, timestamp', // 聊天表
             worldBooks: '&id',       // 世界书
             myStickers: '&id',       // 表情包
             globalSettings: 'key',   // 全局设置
             apiPresets: '&id',       // API预设
-            npcs: '&id',             // NPC数据
+            npcs: '&id',             // NPC
             npcGroups: '&id',        // NPC分组
-            qzonePosts: '&id',       // 朋友圈/动态
+            qzonePosts: '&id',       // 朋友圈
             favorites: '&id',        // 收藏
             emails: '&id',           // 邮件
-            grStories: '&id'         // 故事模式
+            grStories: '&id'         // 故事
         });
 
-        // --- 核心同步逻辑：无损保存模式 ---
+        // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
         const saveData = async () => {
             try {
-                // 第一步：先读取数据库里现有的数据，确保不弄丢 script.js 的私有数据（比如分组信息）
+                // 第一步：先读取数据库里现有的数据（包含 script.js 的私有数据）
                 const existingChats = await dexieDB.chats.toArray();
-                const existingMap = {};
-                existingChats.forEach(c => existingMap[c.id] = c);
+                const existingMap = new Map(existingChats.map(c => [c.id, c]));
+                const allChatsToSave = [];
 
-                // 第二步：准备角色数据 (Characters)
-                const charChats = db.characters.map(c => {
-                    // 取出数据库里的老数据，如果没有就用空对象
-                    const originalData = existingMap[c.id] || {};
-                    const originalSettings = originalData.settings || {};
-                    
-                    return {
-                        ...originalData, // 1. 先铺底：保留 script.js 的分组ID、创建时间等陌生字段
-                        ...c,            // 2. 再覆盖：写入你在这个手机上修改的名字、头像
-                        
-                        // 3. 强制同步关键变量名 (script.js 用的名字)
-                        id: c.id,
-                        name: c.realName || c.name, // 同步名字
-                        isGroup: false,
-                        timestamp: c.lastUserMessageTimestamp || Date.now(),
-                        
-                        // 【关键】script.js 的人设变量名是 persona
-                        persona: c.persona, 
-                        
-                        // 【关键】script.js 的聊天记录变量名是 history
-                        history: c.history, 
+                // 1. 处理角色 (Characters)
+                if (db.characters) {
+                    for (const c of db.characters) {
+                        const oldData = existingMap.get(c.id) || {};
+                        const oldSettings = oldData.settings || {};
 
-                        // 【关键】用户信息在 settings 里
-                        settings: {
-                            ...originalSettings,   // 保留对方的设置
-                            ...c.settings,         // 覆盖你的设置
+                        // 关键修复：script.js 把人设存在 settings.aiPersona，而这里存在 persona
+                        // 我们两个地方都存，确保两边都能读到
+                        const mergedSettings = {
+                            ...oldSettings,
+                            ...c.settings,
+                            aiPersona: c.persona,         // 【重点】同步给 script.js 用
+                            myNickname: c.myName,         // 同步用户名
+                            userPersona: c.myPersona,     // 同步用户人设
+                            myPersona: c.myPersona,       // 备份用户人设
+                            myAvatar: c.myAvatar,         // 同步用户头像
                             
-                            // 同步你的名字和人设
-                            myNickname: c.myName,          // script.js 叫 myNickname
-                            userPersona: c.myPersona,      // script.js 叫 userPersona
-                            myAvatar: c.myAvatar,          // script.js 叫 myAvatar
-                            
-                            // 保存开关
+                            // 保持开关
                             bilingualModeEnabled: c.bilingualModeEnabled,
                             useCustomBubbleCss: c.useCustomBubbleCss,
                             customBubbleCss: c.customBubbleCss
-                        }
-                    };
-                });
+                        };
 
-                // 第三步：准备群聊数据 (Groups)
-                const groupChats = db.groups.map(g => {
-                    const originalData = existingMap[g.id] || {};
-                    const originalSettings = originalData.settings || {};
+                        const mergedChat = {
+                            ...oldData, // 保留 script.js 的陌生字段 (如 npcGroupId)
+                            ...c,       // 覆盖本地的新修改
+                            
+                            id: c.id,
+                            name: c.realName || c.name,
+                            isGroup: false,
+                            timestamp: c.lastUserMessageTimestamp || Date.now(), // 更新时间戳，让对方知道有新消息
+                            
+                            persona: c.persona, // 本地用的字段
+                            history: c.history || [], // 同步聊天记录
+                            settings: mergedSettings
+                        };
+                        // 移除临时字段
+                        delete mergedChat._raw; 
+                        allChatsToSave.push(mergedChat);
+                    }
+                }
 
-                    return {
-                        ...originalData,
-                        ...g,
-                        id: g.id,
-                        name: g.name,
-                        isGroup: true,
-                        timestamp: Date.now(),
-                        history: g.history,
-                        settings: {
-                            ...originalSettings,
-                            ...g.settings,
-                            myNickname: g.me.nickname,
-                            userPersona: g.me.persona,
-                            myAvatar: g.me.avatar,
-                            useCustomBubbleCss: g.useCustomBubbleCss,
-                            customBubbleCss: g.customBubbleCss
-                        }
-                    };
-                });
+                // 2. 处理群组 (Groups)
+                if (db.groups) {
+                    for (const g of db.groups) {
+                        const oldData = existingMap.get(g.id) || {};
+                        const oldSettings = oldData.settings || {};
+                        
+                        const mergedSettings = {
+                             ...oldSettings,
+                             ...g.settings,
+                             myNickname: g.me.nickname,
+                             userPersona: g.me.persona,
+                             myAvatar: g.me.avatar,
+                             useCustomBubbleCss: g.useCustomBubbleCss,
+                             customBubbleCss: g.customBubbleCss
+                        };
 
-                // 第四步：保存进数据库
+                        const mergedGroup = {
+                            ...oldData,
+                            ...g,
+                            id: g.id,
+                            name: g.name,
+                            isGroup: true,
+                            timestamp: Date.now(),
+                            history: g.history || [],
+                            settings: mergedSettings
+                        };
+                        delete mergedGroup._raw;
+                        allChatsToSave.push(mergedGroup);
+                    }
+                }
+
+                // 3. 写入数据库
                 await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, async () => {
-                    // 使用 bulkPut 批量保存，它会自动合并数据
-                    await dexieDB.chats.bulkPut([...charChats, ...groupChats]);
+                    await dexieDB.chats.bulkPut(allChatsToSave);
                     
-                    // 保存其他通用数据
-                    if(db.worldBooks && db.worldBooks.length) await dexieDB.worldBooks.bulkPut(db.worldBooks);
-                    if(db.myStickers && db.myStickers.length) await dexieDB.myStickers.bulkPut(db.myStickers);
+                    if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
+                    if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
 
-                    // 保存全局设置
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
                             return dexieDB.globalSettings.put({ key: key, value: db[key] });
@@ -6591,7 +6595,6 @@ border-top: none;
 
         const loadData = async () => {
             try {
-                // 从数据库加载所有数据
                 const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
                     dexieDB.chats.toArray(),
                     dexieDB.worldBooks.toArray(),
@@ -6600,111 +6603,76 @@ border-top: none;
                     dexieDB.apiPresets.toArray()
                 ]);
 
-                // 载入基础数据
-                if(worldBooks && worldBooks.length) db.worldBooks = worldBooks;
-                if(myStickers && myStickers.length) db.myStickers = myStickers;
-                if(apiPresets && apiPresets.length) db.apiPresets = apiPresets;
+                if(worldBooks) db.worldBooks = worldBooks;
+                if(myStickers) db.myStickers = myStickers;
+                if(apiPresets) db.apiPresets = apiPresets;
 
-                // --- 核心同步逻辑：读取并映射变量 ---
-                
-                // 1. 读取角色 (过滤掉群组)
+                // 恢复角色：同时尝试读取 persona 和 settings.aiPersona
                 db.characters = chats.filter(c => !c.isGroup).map(c => {
                     const settings = c.settings || {};
-                    
+                    // 【重点】如果 script.js 修改了人设，它可能在 settings.aiPersona 里
+                    const syncedPersona = settings.aiPersona || c.persona || c.description || '';
+                    const syncedUserPersona = settings.userPersona || settings.myPersona || '';
+
                     return {
-                        ...c, // 读取所有数据
-                        
-                        // 映射回 index (6).html 使用的变量名
+                        ...c,
+                        _raw: c, // 备份
                         id: c.id,
-                        realName: c.name,    // 名字
-                        remarkName: c.name,  // 备注
-                        
-                        // 【关键】从 persona 字段读取人设
-                        persona: c.persona || c.description || '', 
-                        
+                        realName: c.name,
+                        remarkName: c.name,
+                        persona: syncedPersona, // 读取同步后的人设
                         avatar: c.avatar || settings.aiAvatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
-                        
-                        // 【关键】从 settings 读取你的信息
-                        myName: settings.myNickname || '我', 
-                        myPersona: settings.userPersona || '', 
+                        myName: settings.myNickname || '我',
+                        myPersona: syncedUserPersona,
                         myAvatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg',
-                        
-                        // 【关键】读取聊天记录
                         history: c.history || [],
-                        
                         worldBookIds: c.worldBookIds || [],
                         settings: settings,
-
-                        // 恢复本地特有设置
                         bilingualModeEnabled: settings.bilingualModeEnabled || false,
                         useCustomBubbleCss: settings.useCustomBubbleCss || false,
                         customBubbleCss: settings.customBubbleCss || ''
                     };
                 });
 
-                // 2. 读取群组
+                // 恢复群组
                 db.groups = chats.filter(c => c.isGroup).map(g => {
                     const settings = g.settings || {};
                     return {
                         ...g,
+                        _raw: g,
                         id: g.id,
                         name: g.name,
                         avatar: g.avatar,
                         me: { 
                              nickname: settings.myNickname || '我',
-                             persona: settings.userPersona || '',
+                             persona: settings.userPersona || settings.myPersona || '',
                              avatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg'
                         },
                         members: g.members || [],
                         history: g.history || [],
                         worldBookIds: g.worldBookIds || [],
-                        settings: settings
+                        settings: settings,
+                        useCustomBubbleCss: settings.useCustomBubbleCss || false,
+                        customBubbleCss: settings.customBubbleCss || ''
                     };
                 });
 
-                // 3. 加载全局设置 (优先使用本地默认值，除非数据库有值)
                 const settingsMap = settingsArray.reduce((acc, { key, value }) => {
                     acc[key] = value;
                     return acc;
                 }, {});
 
                 globalSettingKeys.forEach(key => {
-                    const defaultValue = {
-                        apiSettings: {},
-                        wallpaper: 'https://i.postimg.cc/W4Z9R9x4/ins-1.jpg',
-                        homeScreenMode: 'night',
-                        fontUrl: '',
-                        customIcons: {},
-                        apiPresets: [], 
-                        bubbleCssPresets: [],
-                        myPersonaPresets: [],
-                        globalCss: '',
-                        globalCssPresets: [],
-                        homeSignature: '编辑个性签名...',
-                        forumBindings: { worldBookIds: [], charIds: [], userPersonaIds: [] },
-                        pomodoroTasks: [],
-                        pomodoroSettings: { boundCharId: null, userPersona: '', focusBackground: '', taskCardBackground: '', encouragementMinutes: 25, pokeLimit: 5, globalWorldBookIds: [] },
-                        insWidgetSettings: { avatar1: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg', bubble1: 'love u.', avatar2: 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg', bubble2: 'miss u.' },
-                        homeWidgetSettings: defaultWidgetSettings
-                    };
-                    
-                    // 特殊逻辑：只有当本地没有这个设置时，才从数据库读取
-                    // 这样可以保证你在这个手机上的个性化设置（如壁纸）不会被另一个手机覆盖
-                    // 但是 API 设置等关键信息会同步
-                    if (key === 'apiSettings' && !settingsMap[key] && settingsMap['apiConfig']) {
-                        db[key] = settingsMap['apiConfig']; // 兼容 script.js 的 apiConfig
-                    } else if (settingsMap[key] !== undefined) {
+                    if (settingsMap[key] !== undefined) {
                         db[key] = settingsMap[key];
-                    } else if (db[key] === undefined) {
-                        db[key] = defaultValue[key] !== undefined ? JSON.parse(JSON.stringify(defaultValue[key])) : undefined;
+                    } else if (key === 'apiSettings' && settingsMap['apiConfig']) {
+                        db[key] = settingsMap['apiConfig'];
                     }
                 });
 
-                if (apiPresets && apiPresets.length > 0) {
-                    db.apiPresets = apiPresets;
-                }
             } catch (e) {
                 console.error("加载数据失败:", e);
+                alert("加载数据出错，请检查控制台");
             }
         };
         let notificationQueue = [];
@@ -16473,5 +16441,6 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 

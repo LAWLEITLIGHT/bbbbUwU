@@ -6474,16 +6474,17 @@ border-top: none;
             groupRecipientSelectionTitle = document.getElementById('group-recipient-selection-title');
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
 
-        // --- Dexie DB Setup (双向同步修复版) ---
+// --- Dexie DB Setup (双向同步最终修复版) ---
+        // 1. 数据库名称保持一致
         const dexieDB = new Dexie('GeminiChatDB');
 
-        // 2. 声明表结构：关键修复！加回了 'storage' 表
+        // 2. 表结构：【关键修复】加回了 'storage' 表，这是 script.js 存变量的地方
         dexieDB.version(1).stores({
             chats: '&id, timestamp', // 聊天记录
             worldBooks: '&id',       // 世界书
             myStickers: '&id',       // 表情包
-            globalSettings: 'key',   // 新版设置房间
-            storage: 'key, value',   // 【重点】旧版设置房间 (script.js 找这个！)
+            globalSettings: 'key',   // 新版设置仓库
+            storage: 'key, value',   // 【重点】旧版设置仓库 (script.js 找这个！)
             apiPresets: '&id',       // API预设
             npcs: '&id',             // NPC
             npcGroups: '&id',        // NPC分组
@@ -6579,12 +6580,18 @@ border-top: none;
                     // 这样不管 script.js 去哪个房间找，都能找到！
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
-                            // 存一份到新房间
+                            // 1. 存一份到新房间 (globalSettings)
                             const p1 = dexieDB.globalSettings.put({ key: key, value: db[key] });
                             
-                            // 存一份到旧房间 (storage)，注意要转成字符串，因为旧版通常存字符串
+                            // 2. 存一份到旧房间 (storage)，script.js 需要这个！
+                            // 注意：旧版 storage 通常存的是 JSON 字符串
                             let valueToStore = db[key];
-                            try { valueToStore = JSON.stringify(db[key]); } catch(e) {}
+                            try { 
+                                if (typeof valueToStore === 'object') {
+                                    valueToStore = JSON.stringify(valueToStore);
+                                }
+                            } catch(e) {}
+                            
                             const p2 = dexieDB.storage.put({ key: key, value: valueToStore });
                             
                             return Promise.all([p1, p2]);
@@ -6670,11 +6677,12 @@ border-top: none;
                 // 1. 先把旧房间(storage)里的东西搬出来
                 if (storageArray) {
                     storageArray.forEach(({ key, value }) => {
+                        // 尝试把 storage 里的字符串还原成对象
                         try { settingsMap[key] = JSON.parse(value); } catch(e) { settingsMap[key] = value; }
                     });
                 }
 
-                // 2. 再把新房间(globalSettings)里的东西搬出来覆盖
+                // 2. 再把新房间(globalSettings)里的东西搬出来覆盖 (以新版为准)
                 if (settingsArray) {
                     settingsArray.forEach(({ key, value }) => {
                         settingsMap[key] = value;
@@ -16461,6 +16469,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

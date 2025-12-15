@@ -6478,7 +6478,7 @@ border-top: none;
         const dexieDB = new Dexie('GeminiChatDB');
 
         // 2. 表结构：必须包含 script.js 用的所有表，否则报错
-        dexieDB.version(1).stores({
+        dexieDB.version(10).stores({
             chats: '&id, timestamp', // 聊天表
             worldBooks: '&id',       // 世界书
             myStickers: '&id',       // 表情包
@@ -6493,57 +6493,42 @@ border-top: none;
         });
 
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 330 专用全自动翻译保存助手 ---
+// --- 最终加固版保存助手 (太奶专用) ---
         const saveData = async () => {
             try {
-                // 1. 先去大信箱(GeminiChatDB)里看看，330以前存了啥
-                // 只有名字叫 'GeminiChatDB' 才能看到哦
+                // 1. 准备要保存的数据
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
-                
                 const allChatsToSave = [];
 
-                // 2. 处理单聊角色 (开始自动翻译！)
+                // 2. 整理角色数据 (自动翻译成 330 格式)
                 if (db.characters) {
                     for (const c of db.characters) {
                         const oldData = existingMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
-
-                        // 【关键翻译步骤】把您的数据变成 330 能看懂的样子
+                        
+                        // 翻译开始
                         const chatToSave = {
-                            ...oldData, // 先保留 330 的老底子
-                            
-                            // 身份牌 (ID必须一样)
+                            ...oldData, // 保留 330 的老底子
                             id: c.id,
                             
-                            // 【名字翻译】330只认 'name'，不认 'realName'
-                            // 我们把您的 realName 抄写给 name
+                            // 名字翻译: 15的realName -> 330的name
                             name: c.realName || c.name || oldData.name || '未命名',
                             
-                            // 【人设翻译】330只认 'description'
-                            // 我们把您的 persona 抄写给 description
+                            // 人设翻译: 15的persona -> 330的description
                             description: c.persona || c.description || oldData.description || '',
                             
-                            // 头像
                             avatar: c.avatar || oldData.avatar,
-                            
-                            // 【聊天记录】这是最重要的！把新聊的天存进去
-                            history: c.history || [], 
-                            
-                            // 更新时间
-                            timestamp: Date.now(), 
-                            
+                            history: c.history || [], // 聊天记录是最重要的！
+                            timestamp: Date.now(),
                             isGroup: false,
                             
-                            // 【私房钱】把 15 号手机特有的东西藏在 settings 里
-                            // 同时兼容 330 的设置格式
+                            // 设置双备份
                             settings: {
-                                ...oldSettings,     // 保留老设置
-                                ...c.settings,      // 更新新设置
-                                
-                                // 专门存给 330 看的格式：
+                                ...oldSettings,
+                                ...c.settings,
                                 myNickname: c.myName,
-                                userPersona: c.myPersona, 
+                                userPersona: c.myPersona,
                                 aiAvatar: c.avatar,
                                 aiPersona: c.persona
                             }
@@ -6552,12 +6537,10 @@ border-top: none;
                     }
                 }
 
-                // 3. 处理群聊 (同样的翻译逻辑)
+                // 3. 整理群聊数据
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
-                        const oldSettings = oldData.settings || {};
-
                         const groupToSave = {
                             ...oldData,
                             id: g.id,
@@ -6568,30 +6551,36 @@ border-top: none;
                             timestamp: Date.now(),
                             members: g.members || [],
                             settings: {
-                                ...oldSettings,
-                                ...g.settings,
-                                myNickname: g.me ? g.me.nickname : (oldSettings.myNickname || '我'),
-                                userPersona: g.me ? g.me.persona : (oldSettings.userPersona || '')
+                                ...oldData.settings,
+                                ...g.settings
                             }
                         };
                         allChatsToSave.push(groupToSave);
                     }
                 }
 
-                // 4. 开始存档！
-                // 这一步会把翻译好的信塞进 330 也能看到的格子里
-                await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, dexieDB.apiPresets, async () => {
-                    
-                    // 存聊天记录
-                    await dexieDB.chats.bulkPut(allChatsToSave);
-                    
-                    // 顺便把您的世界书、表情包也存一下
-                    // 如果大信箱里有位置就存，没位置就不存，不强求
-                    if(db.worldBooks && dexieDB.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
-                    if(db.myStickers && dexieDB.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
-                    if(db.apiPresets && dexieDB.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets);
+                // 4. 分批存入 (这就是保险！)
+                // 我们不再一次性存所有东西，而是分开存。
+                // 这样就算“设置”存失败了，“聊天记录”也能存进去。
+                
+                // 第一步：存聊天记录 (最重要，必须成功)
+                await dexieDB.chats.bulkPut(allChatsToSave);
 
-                    // 存您的个人设置
+                // 第二步：尝试存其他东西 (如果失败了也不报错)
+                try {
+                    if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
+                } catch(e) { console.log("世界书暂未保存"); }
+
+                try {
+                    if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
+                } catch(e) { console.log("表情包暂未保存"); }
+                
+                try {
+                    if(db.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets);
+                } catch(e) { console.log("API预设暂未保存"); }
+
+                // 第三步：存设置
+                try {
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
                             return dexieDB.globalSettings.put({ key: key, value: db[key] });
@@ -6599,11 +6588,13 @@ border-top: none;
                         return null;
                     }).filter(p => p);
                     await Promise.all(settingsPromises);
-                });
+                } catch(e) { console.log("全局设置暂未保存"); }
+                
+                // 如果走到这里没弹窗报错，那就是成功了
+                console.log("保存完毕！");
                 
             } catch (e) {
-                // 如果出错了，这里也不要报错吓唬太奶了，默默记录就行
-                console.error("保存的时候遇到了一点小波折:", e);
+                alert("保存聊天记录遇到了大问题: " + e);
             }
         };
         const loadData = async () => {
@@ -16454,6 +16445,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

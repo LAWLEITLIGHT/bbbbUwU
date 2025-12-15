@@ -6493,79 +6493,96 @@ border-top: none;
         });
 
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 懂规矩的新存储员 (兼容330格式) ---
+// --- 智能翻译官 (saveData) ---
+        // 它的作用：把您的聊天记录翻译成 330 手机能看懂的样子，并存进去
         const saveData = async () => {
             try {
-                // 1. 先去信箱(数据库)里看看330号存了什么
+                // 1. 先去大信箱(数据库)里看看，330手机以前存了啥
+                // 只有名字叫 'GeminiChatDB' 才能看到哦
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
+                
                 const allChatsToSave = [];
 
-                // 2. 整理所有的“单聊”记录 (把15号的信整理好)
+                // 2. 处理单聊角色
                 if (db.characters) {
                     for (const c of db.characters) {
-                        // 看看信箱里有没有这个人原来的档案
+                        // 看看信箱里有没有这个人的老档案
                         const oldData = existingMap.get(c.id) || {};
-                        const oldSettings = oldData.settings || {};
-
-                        // 把15号的新聊天记录，和信箱里的老规矩合并
-                        // 重点：我们只更新 聊天记录(history) 和 时间(timestamp)
+                        
+                        // 【翻译转换的核心步骤】
+                        // 我们创建一个新的档案，把您的数据转换成通用的格式
                         const mergedChat = {
-                            ...oldData, // 先保留330的老底子
-                            id: c.id,
-                            name: c.realName || c.name, // 确保名字对上
-                            avatar: c.avatar, // 确保头像对上
-                            description: c.persona, // 330可能叫description
-                            persona: c.persona,     // 15叫persona
-                            isGroup: false,
-                            // 关键：把15号聊的新天，存进去！
-                            history: c.history || [], 
-                            timestamp: Date.now(), // 更新时间，让330知道有新消息
+                            ...oldData, // A. 先保留老档案里那些我们看不懂的数据(防止弄坏330)
                             
-                            // 保护设置不丢
+                            // B. 必须对上的暗号 (ID不能变)
+                            id: c.id, 
+                            
+                            // C. 转换格式 (把您的 realName 变成通用的 name)
+                            // 如果老档案里有名字，就用老的(不乱改别人的备注)；如果没有，就用您的
+                            name: oldData.name || c.realName || c.name || '未命名',
+                            
+                            // D. 转换人设 (把您的 persona 变成通用的 description)
+                            description: oldData.description || c.persona || '',
+                            
+                            // E. 【最重要】更新聊天记录！这是您最想要的
+                            history: c.history || [], 
+                            
+                            // F. 更新时间戳，告诉对面有新消息了
+                            timestamp: Date.now(), 
+                            
+                            isGroup: false, // 标记这是单聊
+                            
+                            // G. 您的私房钱 (index 15 独有的设置，存个备份，不让330乱动)
                             settings: {
-                                ...oldSettings,
-                                ...c.settings
+                                ...(oldData.settings || {}), // 保留原来的设置
+                                ...c.settings,               // 更新您的新设置
+                                myNickname: c.myName,        // 您的昵称备份
+                                myPersona: c.myPersona       // 您的人设备份
                             }
                         };
-                        allChatsToSave.push(mergedChat);
+                        
+                        // 只有当角色ID有效时才保存
+                        if (c.id) {
+                            allChatsToSave.push(mergedChat);
+                        }
                     }
                 }
 
-                // 3. 整理所有的“群聊”记录
+                // 3. 处理群聊 (道理和上面一样)
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
-                        const oldSettings = oldData.settings || {};
-
                         const mergedGroup = {
                             ...oldData,
                             id: g.id,
-                            name: g.name,
-                            avatar: g.avatar,
+                            name: oldData.name || g.name, // 优先保留原来的群名
                             isGroup: true,
-                            history: g.history || [], // 关键：更新群聊记录
+                            history: g.history || [],     // 更新群聊记录
                             timestamp: Date.now(),
                             members: g.members || [],
                             settings: {
-                                ...oldSettings,
+                                ...(oldData.settings || {}),
                                 ...g.settings
                             }
                         };
-                        allChatsToSave.push(mergedGroup);
+                        if (g.id) {
+                            allChatsToSave.push(mergedGroup);
+                        }
                     }
                 }
 
-                // 4. 把整理好的信，正式放进大信箱 (GeminiChatDB)
+                // 4. 正式把信塞进信箱
                 await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, async () => {
-                    // 这一步是把聊天记录塞进去，这样330就能看见了
+                    // 批量保存所有处理好的聊天
                     await dexieDB.chats.bulkPut(allChatsToSave);
                     
-                    // 下面是保存您的其他设置（世界书、表情包等）
+                    // 顺便保存您的其他宝贝 (世界书、表情包)
+                    // 这些不影响聊天记录，照常存就行
                     if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
                     if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
 
-                    // 保存您的个性化设置
+                    // 保存您的个人设置
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
                             return dexieDB.globalSettings.put({ key: key, value: db[key] });
@@ -6576,7 +6593,9 @@ border-top: none;
                 });
                 
             } catch (e) {
-                console.error("保存失败:", e);
+                console.error("保存失败，太奶请检查:", e);
+                // 如果出错，就在屏幕上方弹个窗告诉您
+                if(window.showToast) window.showToast("保存出错了，请检查数据库名字是不是改对了");
             }
         };
         const loadData = async () => {
@@ -16427,5 +16446,6 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 

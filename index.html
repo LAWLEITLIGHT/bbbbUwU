@@ -6491,218 +6491,204 @@ border-top: none;
             emails: '&id',           // 邮件
             grStories: '&id'         // 故事
         });
-
+// --- 这是按照您“原始版15号”复刻的本地仓库 ---
+    const localDB = new Dexie('ChatApplicationDB_15');
+    // 这里完全照搬了您原始文件的结构
+    localDB.version(1).stores({
+        chats: '&id, timestamp', 
+        worldBooks: '&id',
+        myStickers: '&id',
+        globalSettings: 'key',
+        apiPresets: '&id'
+    });
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 330 专用：自动拆包（去前缀）保存助手 ---
+// --- 双轨保存助手：两边各存各的格式 ---
         const saveData = async () => {
             try {
-                // 1. 打开大信箱
-                const existingChats = await dexieDB.chats.toArray();
-                const existingMap = new Map(existingChats.map(c => [c.id, c]));
-                const allChatsToSave = [];
+                // ==========================
+                // 轨道一：存给 330 看 (GeminiChatDB)
+                // ==========================
+                const existingGeminiChats = await dexieDB.chats.toArray();
+                const geminiMap = new Map(existingGeminiChats.map(c => [c.id, c]));
+                const chatsForGemini = [];
 
-                // 2. 处理单聊角色
+                // 准备角色数据 (330格式：清洗、拆包)
                 if (db.characters) {
                     for (const c of db.characters) {
-                        const oldData = existingMap.get(c.id) || {};
+                        const oldData = geminiMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
-
-                        // ===【自动拆包流水线】===
+                        
+                        // 清洗聊天记录：去包装、转纯文本
                         const cleanHistory = (c.history || []).map(msg => {
                             let content = msg.content || '';
-                            
-                            // 确保内容是文字
-                            if (typeof content !== 'string') {
-                                content = '[复杂消息]';
-                            } else {
-                                content = content.trim(); // 去掉首尾空格
-                                
-                                // 【剪刀来了】
-                                // 只要看到是 [xxx的消息：...] 这种格式，就把外壳剪掉，只留里面的话
-                                // 比如 "[天琦的消息：亲亲]" 会变成 "亲亲"
+                            if (typeof content === 'string') {
                                 const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
-                                if (match) {
-                                    content = match[1].trim(); 
-                                }
-                            }
+                                if (match) content = match[1].trim(); 
+                            } else { content = '[复杂消息]'; }
                             
-                            return {
-                                id: msg.id,
-                                role: msg.role,
-                                content: content, // 这里就是拆好包装的干货了
-                                timestamp: msg.timestamp
+                            return { 
+                                id: msg.id, 
+                                role: msg.role, 
+                                content: content, 
+                                timestamp: msg.timestamp 
                             };
                         });
-                        // ===【拆包结束】===
 
-                        const chatToSave = {
-                            ...oldData, 
+                        chatsForGemini.push({
+                            ...oldData,
                             id: c.id,
                             name: c.realName || c.name || oldData.name || '未命名',
                             description: c.persona || c.description || oldData.description || '',
                             avatar: c.avatar || oldData.avatar,
-                            history: cleanHistory, // 存入干净的记录
+                            history: cleanHistory,
                             timestamp: Date.now(),
                             isGroup: false,
-                            settings: {
-                                ...oldSettings,
-                                ...c.settings,
-                                myNickname: c.myName,
-                                userPersona: c.myPersona,
-                                aiAvatar: c.avatar,
-                                aiPersona: c.persona
-                            }
-                        };
-                        allChatsToSave.push(chatToSave);
+                            settings: { ...oldSettings, ...c.settings }
+                        });
                     }
                 }
 
-                // 3. 处理群聊 (同样加上拆包功能)
+                // 准备群组数据 (330格式)
                 if (db.groups) {
                     for (const g of db.groups) {
-                        const oldData = existingMap.get(g.id) || {};
-                        const oldSettings = oldData.settings || {};
-
-                        const cleanGroupHistory = (g.history || []).map(msg => {
+                        const oldData = geminiMap.get(g.id) || {};
+                        const cleanHistory = (g.history || []).map(msg => {
                             let content = msg.content || '';
-                            if (typeof content !== 'string') {
-                                content = '[复杂消息]';
-                            } else {
-                                content = content.trim();
-                                // 群聊也拆包
+                            if (typeof content === 'string') {
                                 const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
                                 if (match) content = match[1].trim();
                             }
-                            return {
-                                id: msg.id,
-                                role: msg.role,
-                                content: content,
-                                timestamp: msg.timestamp,
-                                senderId: msg.senderId 
-                            };
+                            return { id: msg.id, role: msg.role, content: content, timestamp: msg.timestamp, senderId: msg.senderId };
                         });
-
-                        const groupToSave = {
+                        chatsForGemini.push({
                             ...oldData,
                             id: g.id,
-                            name: g.name || oldData.name,
-                            avatar: g.avatar || oldData.avatar,
+                            name: g.name,
+                            avatar: g.avatar,
                             isGroup: true,
-                            history: cleanGroupHistory,
+                            history: cleanHistory,
                             timestamp: Date.now(),
                             members: g.members || [],
-                            settings: {
-                                ...oldSettings,
-                                ...g.settings,
-                                myNickname: g.me ? g.me.nickname : '我',
-                                userPersona: g.me ? g.me.persona : ''
-                            }
-                        };
-                        allChatsToSave.push(groupToSave);
+                            settings: { ...oldData.settings, ...g.settings }
+                        });
                     }
                 }
 
-                // 4. 正式存入
-                await dexieDB.chats.bulkPut(allChatsToSave);
+                // 执行 330 保存
+                await dexieDB.chats.bulkPut(chatsForGemini);
 
-                // 存其他数据 (能存就存)
-                try { if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks); } catch(e){}
-                try { if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers); } catch(e){}
-                try { if(db.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets); } catch(e){}
-                try {
+
+                // ==========================
+                // 轨道二：存给自己看 (ChatApplicationDB_15)
+                // ==========================
+                // 这里完全按照您给的 index.html 逻辑，原封不动地存
+                const fullBackupData = [...db.characters, ...db.groups];
+                
+                await localDB.transaction('rw', localDB.chats, localDB.worldBooks, localDB.myStickers, localDB.globalSettings, localDB.apiPresets, async () => {
+                    // 1. 存所有角色和群组 (含高级字段)
+                    await localDB.chats.bulkPut(fullBackupData);
+                    
+                    // 2. 存世界书 (如果有)
+                    if(db.worldBooks) await localDB.worldBooks.bulkPut(db.worldBooks);
+                    
+                    // 3. 存表情包 (如果有)
+                    if(db.myStickers) await localDB.myStickers.bulkPut(db.myStickers);
+                    
+                    // 4. 存API预设 (如果有)
+                    if(db.apiPresets) await localDB.apiPresets.bulkPut(db.apiPresets);
+
+                    // 5. 存全局设置
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
-                            return dexieDB.globalSettings.put({ key: key, value: db[key] });
+                            return localDB.globalSettings.put({ key: key, value: db[key] });
                         }
                         return null;
                     }).filter(p => p);
                     await Promise.all(settingsPromises);
-                } catch(e){}
+                });
+                
+                console.log("双重保存完毕！330互通完成，本地备份完成。");
                 
             } catch (e) {
                 console.error("保存出错:", e);
+                if(window.showToast) window.showToast("保存遇到问题，请检查控制台");
             }
         };
+       // --- 智能合并读取：以公共信箱的消息为准，以本地仓库的装修为辅 ---
         const loadData = async () => {
             try {
-                const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
-                    dexieDB.chats.toArray(),
-                    dexieDB.worldBooks.toArray(),
-                    dexieDB.myStickers.toArray(),
-                    dexieDB.globalSettings.toArray(),
-                    dexieDB.apiPresets.toArray()
+                // 1. 同时读取“公共信箱(330)”和“本地仓库(15)”
+                const [geminiChats, localChats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
+                    dexieDB.chats.toArray(),      // 330 的信 (只有简陋的文字)
+                    localDB.chats.toArray(),      // 15 的家底 (有漂亮背景和完整设置)
+                    localDB.worldBooks.toArray(), // 世界书用本地的
+                    localDB.myStickers.toArray(), // 表情包用本地的
+                    localDB.globalSettings.toArray(), // 设置用本地的
+                    localDB.apiPresets.toArray()
                 ]);
 
+                // 2. 恢复杂项 (直接用本地的)
                 if(worldBooks) db.worldBooks = worldBooks;
                 if(myStickers) db.myStickers = myStickers;
                 if(apiPresets) db.apiPresets = apiPresets;
 
-                // 恢复角色：同时尝试读取 persona 和 settings.aiPersona
-                db.characters = chats.filter(c => !c.isGroup).map(c => {
-                    const settings = c.settings || {};
-                    // 【重点】如果 script.js 修改了人设，它可能在 settings.aiPersona 里
-                    const syncedPersona = settings.aiPersona || c.persona || c.description || '';
-                    const syncedUserPersona = settings.userPersona || settings.myPersona || '';
+                // 3. 【最关键的合并步骤】
+                const localMap = new Map(localChats.map(c => [c.id, c]));
+                
+                // 分离角色和群组 (原始文件是混在一起存在 chats 里的)
+                const allCharacters = [];
+                const allGroups = [];
 
-                    return {
-                        ...c,
-                        _raw: c, // 备份
-                        id: c.id,
-                        realName: c.name,
-                        remarkName: c.name,
-                        persona: syncedPersona, // 读取同步后的人设
-                        avatar: c.avatar || settings.aiAvatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
-                        myName: settings.myNickname || '我',
-                        myPersona: syncedUserPersona,
-                        myAvatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg',
-                        history: c.history || [],
-                        worldBookIds: c.worldBookIds || [],
-                        settings: settings,
-                        bilingualModeEnabled: settings.bilingualModeEnabled || false,
-                        useCustomBubbleCss: settings.useCustomBubbleCss || false,
-                        customBubbleCss: settings.customBubbleCss || ''
-                    };
+                geminiChats.forEach(geminiItem => {
+                    // 看看本地有没有这个人的档案
+                    const localItem = localMap.get(geminiItem.id);
+                    
+                    // 如果本地有，就以本地的“富”数据为基础
+                    let finalItem;
+                    if (localItem) {
+                        finalItem = {
+                            ...localItem, // 继承本地的所有高级属性 (chatBg, parts, full persona)
+                            // ❌ 但是聊天记录必须用 GeminiChatDB 里的 (因为那是实时互通的)
+                            history: geminiItem.history || [], 
+                            timestamp: geminiItem.timestamp // 时间也以最新的为准
+                        };
+                    } else {
+                        // 如果本地没有 (可能是330新加的人)，就先凑合用 Gemini 的
+                        finalItem = {
+                            ...geminiItem,
+                            _raw: geminiItem,
+                            // 补全 15 号需要的字段
+                            realName: geminiItem.name,
+                            remarkName: geminiItem.name,
+                            persona: geminiItem.description || '',
+                            avatar: geminiItem.avatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
+                            myName: '我',
+                            settings: geminiItem.settings || {}
+                        };
+                    }
+
+                    if (finalItem.isGroup) {
+                        allGroups.push(finalItem);
+                    } else {
+                        allCharacters.push(finalItem);
+                    }
                 });
 
-                // 恢复群组
-                db.groups = chats.filter(c => c.isGroup).map(g => {
-                    const settings = g.settings || {};
-                    return {
-                        ...g,
-                        _raw: g,
-                        id: g.id,
-                        name: g.name,
-                        avatar: g.avatar,
-                        me: { 
-                             nickname: settings.myNickname || '我',
-                             persona: settings.userPersona || settings.myPersona || '',
-                             avatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg'
-                        },
-                        members: g.members || [],
-                        history: g.history || [],
-                        worldBookIds: g.worldBookIds || [],
-                        settings: settings,
-                        useCustomBubbleCss: settings.useCustomBubbleCss || false,
-                        customBubbleCss: settings.customBubbleCss || ''
-                    };
-                });
+                db.characters = allCharacters;
+                db.groups = allGroups;
 
+                // 4. 恢复全局设置
                 const settingsMap = settingsArray.reduce((acc, { key, value }) => {
                     acc[key] = value;
                     return acc;
                 }, {});
-
                 globalSettingKeys.forEach(key => {
-                    if (settingsMap[key] !== undefined) {
-                        db[key] = settingsMap[key];
-                    } else if (key === 'apiSettings' && settingsMap['apiConfig']) {
-                        db[key] = settingsMap['apiConfig'];
-                    }
+                    if (settingsMap[key] !== undefined) db[key] = settingsMap[key];
                 });
 
             } catch (e) {
                 console.error("加载数据失败:", e);
-                alert("加载数据出错，请检查控制台");
+                alert("加载数据出错: " + e);
             }
         };
         let notificationQueue = [];
@@ -16471,6 +16457,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

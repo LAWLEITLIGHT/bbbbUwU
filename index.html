@@ -6493,44 +6493,47 @@ border-top: none;
         });
 
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 330 专用：自动拆包保存助手 ---
+// --- 330 专用：自动拆包（去前缀）保存助手 ---
         const saveData = async () => {
             try {
+                // 1. 打开大信箱
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
                 const allChatsToSave = [];
 
-                // 处理单聊
+                // 2. 处理单聊角色
                 if (db.characters) {
                     for (const c of db.characters) {
                         const oldData = existingMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
 
-                        // ===【过滤网升级：自动拆包装】===
+                        // ===【自动拆包流水线】===
                         const cleanHistory = (c.history || []).map(msg => {
                             let content = msg.content || '';
                             
-                            // 1. 确保内容是文字
+                            // 确保内容是文字
                             if (typeof content !== 'string') {
-                                content = '[复杂消息]'; 
+                                content = '[复杂消息]';
                             } else {
-                                // 2. 【关键一步】把 "[xxx的消息：亲亲]" 变成 "亲亲"
-                                // 正则表达式：找以 [ 开头，中间有“的消息：”，以 ] 结尾的句子
+                                content = content.trim(); // 去掉首尾空格
+                                
+                                // 【剪刀来了】
+                                // 只要看到是 [xxx的消息：...] 这种格式，就把外壳剪掉，只留里面的话
+                                // 比如 "[天琦的消息：亲亲]" 会变成 "亲亲"
                                 const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
                                 if (match) {
-                                    // 如果找到了包装，就只取里面的内容
-                                    content = match[1]; 
+                                    content = match[1].trim(); 
                                 }
                             }
                             
                             return {
                                 id: msg.id,
                                 role: msg.role,
-                                content: content, // 这里存的就是拆包后的干净话了
+                                content: content, // 这里就是拆好包装的干货了
                                 timestamp: msg.timestamp
                             };
                         });
-                        // ===【过滤结束】===
+                        // ===【拆包结束】===
 
                         const chatToSave = {
                             ...oldData, 
@@ -6554,7 +6557,7 @@ border-top: none;
                     }
                 }
 
-                // 处理群聊 (同样的拆包逻辑)
+                // 3. 处理群聊 (同样加上拆包功能)
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
@@ -6565,9 +6568,10 @@ border-top: none;
                             if (typeof content !== 'string') {
                                 content = '[复杂消息]';
                             } else {
+                                content = content.trim();
                                 // 群聊也拆包
                                 const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
-                                if (match) content = match[1];
+                                if (match) content = match[1].trim();
                             }
                             return {
                                 id: msg.id,
@@ -6598,10 +6602,10 @@ border-top: none;
                     }
                 }
 
-                // 分批存入
+                // 4. 正式存入
                 await dexieDB.chats.bulkPut(allChatsToSave);
 
-                // 存其他数据
+                // 存其他数据 (能存就存)
                 try { if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks); } catch(e){}
                 try { if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers); } catch(e){}
                 try { if(db.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets); } catch(e){}
@@ -16467,6 +16471,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

@@ -6473,18 +6473,16 @@ border-top: none;
             confirmGroupRecipientBtn = document.getElementById('confirm-group-recipient-btn'),
             groupRecipientSelectionTitle = document.getElementById('group-recipient-selection-title');
         const linkGroupWorldBookBtn = document.getElementById('link-group-world-book-btn');
-
-// --- Dexie DB Setup (双向同步最终修复版) ---
-        // 1. 数据库名称保持一致
+// --- Dexie DB Setup (完美同步版) ---
+        // 1. 数据库名称：script.js 用的是 'GeminiChatDB'
         const dexieDB = new Dexie('GeminiChatDB');
 
-        // 2. 表结构：【关键修复】加回了 'storage' 表，这是 script.js 存变量的地方
+        // 2. 表结构：必须包含 script.js 用的所有表，否则报错
         dexieDB.version(1).stores({
-            chats: '&id, timestamp', // 聊天记录
+            chats: '&id, timestamp', // 聊天表
             worldBooks: '&id',       // 世界书
             myStickers: '&id',       // 表情包
-            globalSettings: 'key',   // 新版设置仓库
-            storage: 'key, value',   // 【重点】旧版设置仓库 (script.js 找这个！)
+            globalSettings: 'key',   // 全局设置
             apiPresets: '&id',       // API预设
             npcs: '&id',             // NPC
             npcGroups: '&id',        // NPC分组
@@ -6494,28 +6492,30 @@ border-top: none;
             grStories: '&id'         // 故事
         });
 
-        // --- 核心同步逻辑 ---
+        // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
         const saveData = async () => {
             try {
-                // 1. 先读取数据库旧数据，防止丢失私有字段
+                // 第一步：先读取数据库里现有的数据（包含 script.js 的私有数据）
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
                 const allChatsToSave = [];
 
-                // 2. 处理角色 (Characters)
+                // 1. 处理角色 (Characters)
                 if (db.characters) {
                     for (const c of db.characters) {
                         const oldData = existingMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
 
-                        // 关键：同时写入 script.js 认的字段 (aiPersona) 和你认的字段 (persona)
+                        // 关键修复：script.js 把人设存在 settings.aiPersona，而这里存在 persona
+                        // 我们两个地方都存，确保两边都能读到
                         const mergedSettings = {
                             ...oldSettings,
                             ...c.settings,
-                            aiPersona: c.persona,         // 330版script认这个
-                            myNickname: c.myName,         // 用户名
-                            userPersona: c.myPersona,     // 用户人设
-                            myAvatar: c.myAvatar,         // 用户头像
+                            aiPersona: c.persona,         // 【重点】同步给 script.js 用
+                            myNickname: c.myName,         // 同步用户名
+                            userPersona: c.myPersona,     // 同步用户人设
+                            myPersona: c.myPersona,       // 备份用户人设
+                            myAvatar: c.myAvatar,         // 同步用户头像
                             
                             // 保持开关
                             bilingualModeEnabled: c.bilingualModeEnabled,
@@ -6524,27 +6524,40 @@ border-top: none;
                         };
 
                         const mergedChat = {
-                            ...oldData, // 保留 script.js 的陌生字段
+                            ...oldData, // 保留 script.js 的陌生字段 (如 npcGroupId)
                             ...c,       // 覆盖本地的新修改
+                            
                             id: c.id,
                             name: c.realName || c.name,
                             isGroup: false,
-                            timestamp: Date.now(), // 更新时间戳，强制刷新排序
-                            persona: c.persona, 
-                            history: c.history || [], 
+                            timestamp: c.lastUserMessageTimestamp || Date.now(), // 更新时间戳，让对方知道有新消息
+                            
+                            persona: c.persona, // 本地用的字段
+                            history: c.history || [], // 同步聊天记录
                             settings: mergedSettings
                         };
+                        // 移除临时字段
                         delete mergedChat._raw; 
                         allChatsToSave.push(mergedChat);
                     }
                 }
 
-                // 3. 处理群组 (Groups)
+                // 2. 处理群组 (Groups)
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
                         const oldSettings = oldData.settings || {};
                         
+                        const mergedSettings = {
+                             ...oldSettings,
+                             ...g.settings,
+                             myNickname: g.me.nickname,
+                             userPersona: g.me.persona,
+                             myAvatar: g.me.avatar,
+                             useCustomBubbleCss: g.useCustomBubbleCss,
+                             customBubbleCss: g.customBubbleCss
+                        };
+
                         const mergedGroup = {
                             ...oldData,
                             ...g,
@@ -6553,48 +6566,23 @@ border-top: none;
                             isGroup: true,
                             timestamp: Date.now(),
                             history: g.history || [],
-                            settings: {
-                                ...oldSettings,
-                                ...g.settings,
-                                myNickname: g.me.nickname,
-                                userPersona: g.me.persona,
-                                myAvatar: g.me.avatar,
-                                useCustomBubbleCss: g.useCustomBubbleCss,
-                                customBubbleCss: g.customBubbleCss
-                            }
+                            settings: mergedSettings
                         };
                         delete mergedGroup._raw;
                         allChatsToSave.push(mergedGroup);
                     }
                 }
 
-                // 4. 执行保存：双写策略
-                await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, dexieDB.storage, async () => {
-                    // 保存聊天和角色
+                // 3. 写入数据库
+                await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, async () => {
                     await dexieDB.chats.bulkPut(allChatsToSave);
                     
                     if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
                     if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
 
-                    // 【核心修复】将所有设置同时存入 globalSettings 和 storage
-                    // 这样不管 script.js 去哪个房间找，都能找到！
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
-                            // 1. 存一份到新房间 (globalSettings)
-                            const p1 = dexieDB.globalSettings.put({ key: key, value: db[key] });
-                            
-                            // 2. 存一份到旧房间 (storage)，script.js 需要这个！
-                            // 注意：旧版 storage 通常存的是 JSON 字符串
-                            let valueToStore = db[key];
-                            try { 
-                                if (typeof valueToStore === 'object') {
-                                    valueToStore = JSON.stringify(valueToStore);
-                                }
-                            } catch(e) {}
-                            
-                            const p2 = dexieDB.storage.put({ key: key, value: valueToStore });
-                            
-                            return Promise.all([p1, p2]);
+                            return dexieDB.globalSettings.put({ key: key, value: db[key] });
                         }
                         return null;
                     }).filter(p => p);
@@ -6607,13 +6595,11 @@ border-top: none;
 
         const loadData = async () => {
             try {
-                // 读取时同时检查两个房间
-                const [chats, worldBooks, myStickers, settingsArray, storageArray, apiPresets] = await Promise.all([
+                const [chats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
                     dexieDB.chats.toArray(),
                     dexieDB.worldBooks.toArray(),
                     dexieDB.myStickers.toArray(),
                     dexieDB.globalSettings.toArray(),
-                    dexieDB.storage.toArray(), // 读取 storage
                     dexieDB.apiPresets.toArray()
                 ]);
 
@@ -6621,23 +6607,23 @@ border-top: none;
                 if(myStickers) db.myStickers = myStickers;
                 if(apiPresets) db.apiPresets = apiPresets;
 
-                // 恢复角色：同时尝试读取多个可能的字段名
+                // 恢复角色：同时尝试读取 persona 和 settings.aiPersona
                 db.characters = chats.filter(c => !c.isGroup).map(c => {
                     const settings = c.settings || {};
-                    // 只要有一个地方有人设，就读出来
-                    const loadedPersona = settings.aiPersona || c.persona || c.description || '';
-                    const loadedUserPersona = settings.userPersona || settings.myPersona || '';
+                    // 【重点】如果 script.js 修改了人设，它可能在 settings.aiPersona 里
+                    const syncedPersona = settings.aiPersona || c.persona || c.description || '';
+                    const syncedUserPersona = settings.userPersona || settings.myPersona || '';
 
                     return {
                         ...c,
-                        _raw: c, 
+                        _raw: c, // 备份
                         id: c.id,
                         realName: c.name,
                         remarkName: c.name,
-                        persona: loadedPersona, 
+                        persona: syncedPersona, // 读取同步后的人设
                         avatar: c.avatar || settings.aiAvatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
                         myName: settings.myNickname || '我',
-                        myPersona: loadedUserPersona,
+                        myPersona: syncedUserPersona,
                         myAvatar: settings.myAvatar || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg',
                         history: c.history || [],
                         worldBookIds: c.worldBookIds || [],
@@ -6671,25 +6657,11 @@ border-top: none;
                     };
                 });
 
-                // 恢复全局设置：合并两个房间的数据
-                const settingsMap = {};
-                
-                // 1. 先把旧房间(storage)里的东西搬出来
-                if (storageArray) {
-                    storageArray.forEach(({ key, value }) => {
-                        // 尝试把 storage 里的字符串还原成对象
-                        try { settingsMap[key] = JSON.parse(value); } catch(e) { settingsMap[key] = value; }
-                    });
-                }
+                const settingsMap = settingsArray.reduce((acc, { key, value }) => {
+                    acc[key] = value;
+                    return acc;
+                }, {});
 
-                // 2. 再把新房间(globalSettings)里的东西搬出来覆盖 (以新版为准)
-                if (settingsArray) {
-                    settingsArray.forEach(({ key, value }) => {
-                        settingsMap[key] = value;
-                    });
-                }
-
-                // 3. 赋值给内存
                 globalSettingKeys.forEach(key => {
                     if (settingsMap[key] !== undefined) {
                         db[key] = settingsMap[key];
@@ -16469,7 +16441,5 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
-
-
 
 

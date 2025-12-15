@@ -6493,55 +6493,54 @@ border-top: none;
         });
 
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 330 专用：带“过滤网”的保存助手 ---
+// --- 330 专用：自动拆包保存助手 ---
         const saveData = async () => {
             try {
-                // 1. 打开大信箱
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
-                
                 const allChatsToSave = [];
 
-                // 2. 处理单聊角色
+                // 处理单聊
                 if (db.characters) {
                     for (const c of db.characters) {
                         const oldData = existingMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
 
-                        // ===【过滤网启动】===
-                        // 把您的聊天记录“洗”一遍，只留下 330 能看懂的 4 样东西
+                        // ===【过滤网升级：自动拆包装】===
                         const cleanHistory = (c.history || []).map(msg => {
-                            // 确保内容是字符串（防止图片或其他复杂内容导致报错）
-                            let safeContent = msg.content || '';
-                            if (typeof safeContent !== 'string') {
-                                safeContent = '[复杂消息]'; 
+                            let content = msg.content || '';
+                            
+                            // 1. 确保内容是文字
+                            if (typeof content !== 'string') {
+                                content = '[复杂消息]'; 
+                            } else {
+                                // 2. 【关键一步】把 "[xxx的消息：亲亲]" 变成 "亲亲"
+                                // 正则表达式：找以 [ 开头，中间有“的消息：”，以 ] 结尾的句子
+                                const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
+                                if (match) {
+                                    // 如果找到了包装，就只取里面的内容
+                                    content = match[1]; 
+                                }
                             }
                             
                             return {
-                                id: msg.id,              // 1. 消息ID
-                                role: msg.role,          // 2. 是谁发的 (user/assistant)
-                                content: safeContent,    // 3. 说话内容
-                                timestamp: msg.timestamp // 4. 发送时间
+                                id: msg.id,
+                                role: msg.role,
+                                content: content, // 这里存的就是拆包后的干净话了
+                                timestamp: msg.timestamp
                             };
                         });
                         // ===【过滤结束】===
 
                         const chatToSave = {
-                            ...oldData, // 保留老底子
-                            
+                            ...oldData, 
                             id: c.id,
-                            // 名字和人设自动翻译
                             name: c.realName || c.name || oldData.name || '未命名',
                             description: c.persona || c.description || oldData.description || '',
                             avatar: c.avatar || oldData.avatar,
-                            
-                            // 存入“洗干净”的聊天记录！
-                            history: cleanHistory, 
-                            
+                            history: cleanHistory, // 存入干净的记录
                             timestamp: Date.now(),
                             isGroup: false,
-                            
-                            // 私房钱（您的特殊设置）藏在这里
                             settings: {
                                 ...oldSettings,
                                 ...c.settings,
@@ -6555,21 +6554,29 @@ border-top: none;
                     }
                 }
 
-                // 3. 处理群聊 (同样的过滤逻辑)
+                // 处理群聊 (同样的拆包逻辑)
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
                         const oldSettings = oldData.settings || {};
 
-                        // 群聊记录也“洗”一遍
-                        const cleanGroupHistory = (g.history || []).map(msg => ({
-                            id: msg.id,
-                            role: msg.role,
-                            content: typeof msg.content === 'string' ? msg.content : '[复杂消息]',
-                            timestamp: msg.timestamp,
-                            // 群聊多保留一个发送者ID，万一330能看懂呢
-                            senderId: msg.senderId 
-                        }));
+                        const cleanGroupHistory = (g.history || []).map(msg => {
+                            let content = msg.content || '';
+                            if (typeof content !== 'string') {
+                                content = '[复杂消息]';
+                            } else {
+                                // 群聊也拆包
+                                const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
+                                if (match) content = match[1];
+                            }
+                            return {
+                                id: msg.id,
+                                role: msg.role,
+                                content: content,
+                                timestamp: msg.timestamp,
+                                senderId: msg.senderId 
+                            };
+                        });
 
                         const groupToSave = {
                             ...oldData,
@@ -6591,14 +6598,13 @@ border-top: none;
                     }
                 }
 
-                // 4. 分批存入 (为了保险，还是分步走)
-                await dexieDB.chats.bulkPut(allChatsToSave); // 先存最重要的聊天记录
+                // 分批存入
+                await dexieDB.chats.bulkPut(allChatsToSave);
 
-                // 下面这些能存就存，存不上也不报错
+                // 存其他数据
                 try { if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks); } catch(e){}
                 try { if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers); } catch(e){}
                 try { if(db.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets); } catch(e){}
-                
                 try {
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
@@ -6609,12 +6615,8 @@ border-top: none;
                     await Promise.all(settingsPromises);
                 } catch(e){}
                 
-                console.log("保存成功！聊天记录已清洗并同步。");
-                
             } catch (e) {
-                console.error("保存失败:", e);
-                // 只有真的存不进去聊天记录时才弹窗
-                if(window.showToast) window.showToast("保存聊天记录失败，请检查控制台");
+                console.error("保存出错:", e);
             }
         };
         const loadData = async () => {
@@ -16465,6 +16467,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

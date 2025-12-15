@@ -6493,96 +6493,96 @@ border-top: none;
         });
 
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 智能翻译官 (saveData) ---
-        // 它的作用：把您的聊天记录翻译成 330 手机能看懂的样子，并存进去
+// --- 完美适配 330 的存储员 (saveData) ---
         const saveData = async () => {
             try {
-                // 1. 先去大信箱(数据库)里看看，330手机以前存了啥
-                // 只有名字叫 'GeminiChatDB' 才能看到哦
+                // 1. 先把信箱(GeminiChatDB)打开，看看里面原来有啥
                 const existingChats = await dexieDB.chats.toArray();
                 const existingMap = new Map(existingChats.map(c => [c.id, c]));
                 
                 const allChatsToSave = [];
 
-                // 2. 处理单聊角色
+                // 2. 处理单聊角色 (开始翻译！)
                 if (db.characters) {
                     for (const c of db.characters) {
-                        // 看看信箱里有没有这个人的老档案
+                        // 找出这个人在信箱里的老档案
                         const oldData = existingMap.get(c.id) || {};
-                        
-                        // 【翻译转换的核心步骤】
-                        // 我们创建一个新的档案，把您的数据转换成通用的格式
-                        const mergedChat = {
-                            ...oldData, // A. 先保留老档案里那些我们看不懂的数据(防止弄坏330)
+                        const oldSettings = oldData.settings || {};
+
+                        // 【关键步骤】把您的数据，翻译成 330 能看懂的格式
+                        const chatToSave = {
+                            ...oldData, // 先保留 330 所有的秘密记号(比如 npcGroupId)
                             
-                            // B. 必须对上的暗号 (ID不能变)
-                            id: c.id, 
+                            // 身份牌 (ID必须一样)
+                            id: c.id,
                             
-                            // C. 转换格式 (把您的 realName 变成通用的 name)
-                            // 如果老档案里有名字，就用老的(不乱改别人的备注)；如果没有，就用您的
-                            name: oldData.name || c.realName || c.name || '未命名',
+                            // 【名字翻译】330只认 'name'，不认 'realName'
+                            name: c.realName || c.name || oldData.name || '未命名',
                             
-                            // D. 转换人设 (把您的 persona 变成通用的 description)
-                            description: oldData.description || c.persona || '',
+                            // 【人设翻译】330只认 'description'，不认 'persona'
+                            description: c.persona || c.description || oldData.description || '',
                             
-                            // E. 【最重要】更新聊天记录！这是您最想要的
+                            // 头像
+                            avatar: c.avatar || oldData.avatar,
+                            
+                            // 【聊天记录】这是您最想要的！把新的聊天记录塞进去
                             history: c.history || [], 
                             
-                            // F. 更新时间戳，告诉对面有新消息了
+                            // 更新时间，告诉 330 有新消息了
                             timestamp: Date.now(), 
                             
-                            isGroup: false, // 标记这是单聊
+                            isGroup: false,
                             
-                            // G. 您的私房钱 (index 15 独有的设置，存个备份，不让330乱动)
+                            // 【私房钱】把 15 号手机特有的东西(比如备注名、双语开关)藏在 settings 里
+                            // 这样 330 看不到(不会乱)，但 15 号自己能看到
                             settings: {
-                                ...(oldData.settings || {}), // 保留原来的设置
-                                ...c.settings,               // 更新您的新设置
-                                myNickname: c.myName,        // 您的昵称备份
-                                myPersona: c.myPersona       // 您的人设备份
+                                ...oldSettings,     // 保留 330 的设置
+                                ...c.settings,      // 更新 15 的设置
+                                remarkName: c.remarkName, // 您的备注名存这里
+                                myNickname: c.myName,     // 您的昵称存这里
+                                myPersona: c.myPersona    // 您的人设存这里
                             }
                         };
-                        
-                        // 只有当角色ID有效时才保存
-                        if (c.id) {
-                            allChatsToSave.push(mergedChat);
-                        }
+                        allChatsToSave.push(chatToSave);
                     }
                 }
 
-                // 3. 处理群聊 (道理和上面一样)
+                // 3. 处理群聊 (同样的翻译逻辑)
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = existingMap.get(g.id) || {};
-                        const mergedGroup = {
+                        const oldSettings = oldData.settings || {};
+
+                        const groupToSave = {
                             ...oldData,
                             id: g.id,
-                            name: oldData.name || g.name, // 优先保留原来的群名
+                            name: g.name, // 群聊名字通常都叫 name
+                            avatar: g.avatar,
                             isGroup: true,
-                            history: g.history || [],     // 更新群聊记录
+                            history: g.history || [], // 同步群聊记录
                             timestamp: Date.now(),
                             members: g.members || [],
                             settings: {
-                                ...(oldData.settings || {}),
+                                ...oldSettings,
                                 ...g.settings
                             }
                         };
-                        if (g.id) {
-                            allChatsToSave.push(mergedGroup);
-                        }
+                        allChatsToSave.push(groupToSave);
                     }
                 }
 
-                // 4. 正式把信塞进信箱
+                // 4. 开始存盘！
                 await dexieDB.transaction('rw', dexieDB.chats, dexieDB.worldBooks, dexieDB.myStickers, dexieDB.globalSettings, async () => {
-                    // 批量保存所有处理好的聊天
+                    // 把翻译好的信塞进 'chats' 格子 (这是 330 唯一看的地方)
                     await dexieDB.chats.bulkPut(allChatsToSave);
                     
-                    // 顺便保存您的其他宝贝 (世界书、表情包)
-                    // 这些不影响聊天记录，照常存就行
+                    // 下面是存您 15 号手机特有的东西 (世界书、表情包等)
+                    // 330 看不到这些，但没关系，存着也不碍事
                     if(db.worldBooks) await dexieDB.worldBooks.bulkPut(db.worldBooks);
                     if(db.myStickers) await dexieDB.myStickers.bulkPut(db.myStickers);
+                    if(db.apiPresets) await dexieDB.apiPresets.bulkPut(db.apiPresets);
 
-                    // 保存您的个人设置
+                    // 存全局设置
                     const settingsPromises = globalSettingKeys.map(key => {
                         if (db[key] !== undefined) {
                             return dexieDB.globalSettings.put({ key: key, value: db[key] });
@@ -6593,9 +6593,9 @@ border-top: none;
                 });
                 
             } catch (e) {
-                console.error("保存失败，太奶请检查:", e);
-                // 如果出错，就在屏幕上方弹个窗告诉您
-                if(window.showToast) window.showToast("保存出错了，请检查数据库名字是不是改对了");
+                // 如果出错了，弹个窗告诉您
+                alert("保存失败啦！请检查数据库名字是不是改对了: " + e);
+                console.error(e);
             }
         };
         const loadData = async () => {
@@ -16446,6 +16446,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

@@ -6481,7 +6481,6 @@ border-top: none;
       // 2. 表结构：【关键修复】加回了 'storage' 表，这是 script.js 存变量的地方
         dexieDB.version(10).stores({
             chats: '&id, timestamp', // 聊天记录
-            worldBooks: '&id', // 世界书 
             globalSettings: 'key',   // 新版设置仓库
             storage: 'key, value',   // 【重点】旧版设置仓库 (script.js 找这个！)
         });
@@ -16461,6 +16460,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 

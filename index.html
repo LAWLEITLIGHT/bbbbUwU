@@ -6502,7 +6502,7 @@ border-top: none;
         apiPresets: '&id'
     });
         // --- 核心同步逻辑：无损保存 + 变量名对齐 ---
-// --- 双轨保存助手：两边各存各的格式 ---
+// --- 双轨保存助手：把头像也存进 330 ---
         const saveData = async () => {
             try {
                 // ==========================
@@ -6512,26 +6512,20 @@ border-top: none;
                 const geminiMap = new Map(existingGeminiChats.map(c => [c.id, c]));
                 const chatsForGemini = [];
 
-                // 准备角色数据 (330格式：清洗、拆包)
+                // 1. 角色数据
                 if (db.characters) {
                     for (const c of db.characters) {
                         const oldData = geminiMap.get(c.id) || {};
                         const oldSettings = oldData.settings || {};
                         
-                        // 清洗聊天记录：去包装、转纯文本
+                        // 拆包清洗聊天记录
                         const cleanHistory = (c.history || []).map(msg => {
                             let content = msg.content || '';
                             if (typeof content === 'string') {
                                 const match = content.match(/^\[.*?的消息：([\s\S]+)\]$/);
                                 if (match) content = match[1].trim(); 
                             } else { content = '[复杂消息]'; }
-                            
-                            return { 
-                                id: msg.id, 
-                                role: msg.role, 
-                                content: content, 
-                                timestamp: msg.timestamp 
-                            };
+                            return { id: msg.id, role: msg.role, content: content, timestamp: msg.timestamp };
                         });
 
                         chatsForGemini.push({
@@ -6543,12 +6537,21 @@ border-top: none;
                             history: cleanHistory,
                             timestamp: Date.now(),
                             isGroup: false,
-                            settings: { ...oldSettings, ...c.settings }
+                            settings: { 
+                                ...oldSettings, 
+                                ...c.settings,
+                                // 【重点】把您的昵称、人设、头像都明确存进 settings
+                                myNickname: c.myName,
+                                userPersona: c.myPersona,
+                                myAvatar: c.myAvatar, // 存头像！
+                                aiAvatar: c.avatar,
+                                aiPersona: c.persona
+                            }
                         });
                     }
                 }
 
-                // 准备群组数据 (330格式)
+                // 2. 群组数据
                 if (db.groups) {
                     for (const g of db.groups) {
                         const oldData = geminiMap.get(g.id) || {};
@@ -6569,7 +6572,14 @@ border-top: none;
                             history: cleanHistory,
                             timestamp: Date.now(),
                             members: g.members || [],
-                            settings: { ...oldData.settings, ...g.settings }
+                            settings: { 
+                                ...oldData.settings, 
+                                ...g.settings,
+                                // 【重点】群聊也要存头像
+                                myNickname: g.me ? g.me.nickname : '我',
+                                userPersona: g.me ? g.me.persona : '',
+                                myAvatar: g.me ? g.me.avatar : '' // 存头像！
+                            }
                         });
                     }
                 }
@@ -6581,97 +6591,108 @@ border-top: none;
                 // ==========================
                 // 轨道二：存给自己看 (ChatApplicationDB_15)
                 // ==========================
-                // 这里完全按照您给的 index.html 逻辑，原封不动地存
+                // 这一部分完全不用变，还是存最完整的本地数据
                 const fullBackupData = [...db.characters, ...db.groups];
                 
                 await localDB.transaction('rw', localDB.chats, localDB.worldBooks, localDB.myStickers, localDB.globalSettings, localDB.apiPresets, async () => {
-                    // 1. 存所有角色和群组 (含高级字段)
                     await localDB.chats.bulkPut(fullBackupData);
-                    
-                    // 2. 存世界书 (如果有)
-                    if(db.worldBooks) await localDB.worldBooks.bulkPut(db.worldBooks);
-                    
-                    // 3. 存表情包 (如果有)
-                    if(db.myStickers) await localDB.myStickers.bulkPut(db.myStickers);
-                    
-                    // 4. 存API预设 (如果有)
-                    if(db.apiPresets) await localDB.apiPresets.bulkPut(db.apiPresets);
-
-                    // 5. 存全局设置
-                    const settingsPromises = globalSettingKeys.map(key => {
-                        if (db[key] !== undefined) {
-                            return localDB.globalSettings.put({ key: key, value: db[key] });
-                        }
-                        return null;
-                    }).filter(p => p);
-                    await Promise.all(settingsPromises);
+                    try { if(db.worldBooks) await localDB.worldBooks.bulkPut(db.worldBooks); } catch(e){}
+                    try { if(db.myStickers) await localDB.myStickers.bulkPut(db.myStickers); } catch(e){}
+                    try { if(db.apiPresets) await localDB.apiPresets.bulkPut(db.apiPresets); } catch(e){}
+                    try {
+                        const settingsPromises = globalSettingKeys.map(key => {
+                            if (db[key] !== undefined) return localDB.globalSettings.put({ key: key, value: db[key] });
+                        }).filter(p => p);
+                        await Promise.all(settingsPromises);
+                    } catch(e){}
                 });
-                
-                console.log("双重保存完毕！330互通完成，本地备份完成。");
                 
             } catch (e) {
                 console.error("保存出错:", e);
                 if(window.showToast) window.showToast("保存遇到问题，请检查控制台");
             }
         };
-       // --- 智能合并读取：以公共信箱的消息为准，以本地仓库的装修为辅 ---
+// --- 330 优先的智能合并读取 ---
         const loadData = async () => {
             try {
-                // 1. 同时读取“公共信箱(330)”和“本地仓库(15)”
+                // 1. 同时读取“公共信箱(330)”和“本地仓库”
                 const [geminiChats, localChats, worldBooks, myStickers, settingsArray, apiPresets] = await Promise.all([
-                    dexieDB.chats.toArray(),      // 330 的信 (只有简陋的文字)
-                    localDB.chats.toArray(),      // 15 的家底 (有漂亮背景和完整设置)
-                    localDB.worldBooks.toArray(), // 世界书用本地的
-                    localDB.myStickers.toArray(), // 表情包用本地的
-                    localDB.globalSettings.toArray(), // 设置用本地的
+                    dexieDB.chats.toArray(),      // 330 的信
+                    localDB.chats.toArray(),      // 本地的家底
+                    localDB.worldBooks.toArray(), 
+                    localDB.myStickers.toArray(), 
+                    localDB.globalSettings.toArray(), 
                     localDB.apiPresets.toArray()
                 ]);
 
-                // 2. 恢复杂项 (直接用本地的)
+                // 2. 恢复杂项
                 if(worldBooks) db.worldBooks = worldBooks;
                 if(myStickers) db.myStickers = myStickers;
                 if(apiPresets) db.apiPresets = apiPresets;
 
-                // 3. 【最关键的合并步骤】
+                // 3. 【核心步骤】合并数据，330 为王
                 const localMap = new Map(localChats.map(c => [c.id, c]));
                 
-                // 分离角色和群组 (原始文件是混在一起存在 chats 里的)
                 const allCharacters = [];
                 const allGroups = [];
 
                 geminiChats.forEach(geminiItem => {
-                    // 看看本地有没有这个人的档案
                     const localItem = localMap.get(geminiItem.id);
-                    
-                    // 如果本地有，就以本地的“富”数据为基础
                     let finalItem;
+
                     if (localItem) {
-                        finalItem = {
-                            ...localItem, // 继承本地的所有高级属性 (chatBg, parts, full persona)
-                            // ❌ 但是聊天记录必须用 GeminiChatDB 里的 (因为那是实时互通的)
-                            history: geminiItem.history || [], 
-                            timestamp: geminiItem.timestamp // 时间也以最新的为准
-                        };
+                        // === 如果本地有档案，先拿本地的做底子 ===
+                        finalItem = { ...localItem };
+
+                        // === 但是！必须强制更新为 330 的最新数据 ===
+                        finalItem.history = geminiItem.history || [];
+                        finalItem.timestamp = geminiItem.timestamp;
+
+                        // 【这里是您要求的修改：用户设置以 330 为准】
+                        // 检查 330 的 settings 里有没有相关信息，如果有，就覆盖本地的
+                        const gSettings = geminiItem.settings || {};
+
+                        if (finalItem.isGroup) {
+                            // 群聊处理
+                            if (!finalItem.me) finalItem.me = {};
+                            if (gSettings.myNickname) finalItem.me.nickname = gSettings.myNickname; // 覆盖昵称
+                            if (gSettings.userPersona) finalItem.me.persona = gSettings.userPersona; // 覆盖人设
+                            if (gSettings.myAvatar) finalItem.me.avatar = gSettings.myAvatar;       // 覆盖头像
+                        } else {
+                            // 单聊处理
+                            if (gSettings.myNickname) finalItem.myName = gSettings.myNickname;      // 覆盖昵称
+                            if (gSettings.userPersona) finalItem.myPersona = gSettings.userPersona; // 覆盖人设
+                            if (gSettings.myAvatar) finalItem.myAvatar = gSettings.myAvatar;       // 覆盖头像
+                        }
+
                     } else {
-                        // 如果本地没有 (可能是330新加的人)，就先凑合用 Gemini 的
+                        // === 如果本地没有，就完全用 330 的 ===
                         finalItem = {
                             ...geminiItem,
                             _raw: geminiItem,
-                            // 补全 15 号需要的字段
                             realName: geminiItem.name,
                             remarkName: geminiItem.name,
                             persona: geminiItem.description || '',
                             avatar: geminiItem.avatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
-                            myName: '我',
+                            // 尝试从 330 的设置里读取用户信息，读不到就用默认的
+                            myName: (geminiItem.settings && geminiItem.settings.myNickname) || '我',
+                            myPersona: (geminiItem.settings && geminiItem.settings.userPersona) || '',
+                            myAvatar: (geminiItem.settings && geminiItem.settings.myAvatar) || 'https://i.postimg.cc/GtbTnxhP/o-o-1.jpg',
                             settings: geminiItem.settings || {}
                         };
+                        
+                        // 如果是群聊，结构稍微不一样
+                        if (finalItem.isGroup) {
+                            finalItem.me = {
+                                nickname: finalItem.myName,
+                                persona: finalItem.myPersona,
+                                avatar: finalItem.myAvatar
+                            };
+                        }
                     }
 
-                    if (finalItem.isGroup) {
-                        allGroups.push(finalItem);
-                    } else {
-                        allCharacters.push(finalItem);
-                    }
+                    if (finalItem.isGroup) allGroups.push(finalItem);
+                    else allCharacters.push(finalItem);
                 });
 
                 db.characters = allCharacters;
@@ -6688,7 +6709,6 @@ border-top: none;
 
             } catch (e) {
                 console.error("加载数据失败:", e);
-                alert("加载数据出错: " + e);
             }
         };
         let notificationQueue = [];
@@ -16457,6 +16477,7 @@ function renderForumPosts(posts) {
 </body>
 
 </html>
+
 
 
 
